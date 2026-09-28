@@ -52,3 +52,36 @@ export async function directStoryboard({ idea, sceneCount = 6, style = 'cinemati
   }
   return { plan: sanitizePlan(plan), model: response.model };
 }
+
+// Ogólne zapytanie do Claude (np. agent scen piszący shadery), opcjonalnie z obrazem PNG do obejrzenia.
+export async function askClaude({ prompt, imageBase64 }, update = () => {}) {
+  if (!prompt || !String(prompt).trim()) throw new Error('Puste zapytanie.');
+  const model = config.directorModel;
+  const withFallback = /^claude-(opus-5|fable-5)/.test(model);
+  const content = [];
+  if (imageBase64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: String(imageBase64) } });
+  content.push({ type: 'text', text: String(prompt).slice(0, 200000) });
+  update(`Claude (${model}) pracuje…`);
+  let response;
+  try {
+    response = await getClient().beta.messages.create({
+      model,
+      max_tokens: 16000,
+      ...(withFallback ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : {}),
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+      messages: [{ role: 'user', content }],
+    });
+  } catch (err) {
+    if (err instanceof Anthropic.AuthenticationError) throw new Error('Claude: nieprawidłowy ANTHROPIC_API_KEY.');
+    if (err instanceof Anthropic.NotFoundError) throw new Error(`Claude: model "${model}" jest niedostępny dla tego klucza (ustaw DIRECTOR_MODEL).`);
+    if (err instanceof Anthropic.RateLimitError) throw new Error('Claude: przekroczono limit zapytań – spróbuj za chwilę.');
+    if (err instanceof Anthropic.APIConnectionError) throw new Error('Claude: brak połączenia z API.');
+    if (err instanceof Anthropic.APIError) throw new Error(`Claude: ${err.message}`);
+    throw err;
+  }
+  if (response.stop_reason === 'refusal') throw new Error('Claude odmówił wykonania tego zadania – zmień opis.');
+  const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+  if (!text.trim()) throw new Error('Claude nie zwrócił odpowiedzi.');
+  return { text, truncated: response.stop_reason === 'max_tokens' };
+}

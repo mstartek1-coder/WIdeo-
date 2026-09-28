@@ -442,6 +442,9 @@ void main() {
   outColor = vec4(finish(col * 1.2, fc), 1.0);
 }`;
 
+// Wspólny początek każdej sceny – sceny pisane przez agenta AI dostają ten sam nagłówek i bibliotekę funkcji.
+export const SHADER_PREFIX = HEADER + COMMON;
+
 // Rozdzielczość względna bufora sceny (chmury są miękkie – można renderować taniej i skalować).
 export const PROCEDURAL_SHADERS = {
   ocean: { frag: OCEAN, scale: 1 },

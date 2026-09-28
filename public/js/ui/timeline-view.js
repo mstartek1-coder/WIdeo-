@@ -43,7 +43,7 @@ export class TimelineView {
     const video = h('div', { class: 'tl-track' }, h('span', { class: 'tl-label' }, 'Obraz'));
     for (const e of layout) {
       const s = e.scene;
-      const kind = s.source.type === 'media' ? (s.source.kind === 'image' ? 'image' : 'media') : '';
+      const kind = s.source.type === 'media' ? (s.source.kind === 'image' ? 'image' : 'media') : s.source.type === 'shader' ? 'ai' : '';
       const selected = selection.type === 'scene' && selection.id === s.id;
       const clip = h(
         'div',

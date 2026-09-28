@@ -1,9 +1,14 @@
 // Renderer WebGL2: rysuje sceny (proceduralne lub klipy/zdjęcia AI) z ruchem kamery i korekcją barwną,
 // miesza je zgodnie z przejściami, dodaje bloom, ziarno, winietę, kasety kinowe i animowane napisy.
 
-import { VERT, PROCEDURAL_SHADERS, LAYER, BRIGHT, BLUR, POST } from './shaders.js';
+import { VERT, PROCEDURAL_SHADERS, SHADER_PREFIX, LAYER, BRIGHT, BLUR, POST } from './shaders.js';
 import { layoutScenes, totalDuration, compositeAt, cameraAt, overlaysAt, subtitleAt, globalFade } from '../core/timeline.js';
 import { FONTS } from '../core/project.js';
+import { hashString } from '../core/random.js';
+import { mapCompileLog } from '../core/scene-agent.js';
+
+const PREFIX_LINES = SHADER_PREFIX.split('\n').length;
+const AI_SCENE_SCALE = 0.6;
 
 function compile(gl, type, src) {
   const sh = gl.createShader(type);
@@ -12,7 +17,9 @@ function compile(gl, type, src) {
   if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
     const log = gl.getShaderInfoLog(sh);
     gl.deleteShader(sh);
-    throw new Error(`Błąd kompilacji shadera: ${log}`);
+    const err = new Error(`Błąd kompilacji shadera: ${log}`);
+    err.log = log;
+    throw err;
   }
   return sh;
 }
@@ -71,6 +78,7 @@ export class Renderer {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
     this.programs = {};
+    this.customPrograms = new Map();
     this.layerProg = program(gl, LAYER);
     this.brightProg = program(gl, BRIGHT);
     this.blurProg = program(gl, BLUR);
@@ -94,6 +102,56 @@ export class Renderer {
       this.programs[preset] = program(this.gl, def.frag);
     }
     return this.programs[preset];
+  }
+
+  // Scena napisana przez agenta AI: kompilacja z pamięcią podręczną (także błędów).
+  customProgram(code) {
+    const key = hashString(code);
+    if (!this.customPrograms.has(key)) {
+      let entry;
+      try {
+        entry = { prog: program(this.gl, `${SHADER_PREFIX}\n${code}`), log: '' };
+      } catch (err) {
+        entry = { prog: null, log: mapCompileLog(err.log || err.message, PREFIX_LINES) };
+      }
+      this.customPrograms.set(key, entry);
+      if (this.customPrograms.size > 40) this.customPrograms.delete(this.customPrograms.keys().next().value);
+    }
+    return this.customPrograms.get(key);
+  }
+
+  checkShader(code) {
+    const entry = this.customProgram(code);
+    return { ok: !!entry.prog, log: entry.log };
+  }
+
+  // Renderuje jedną klatkę sceny AI do PNG (agent ogląda ją, żeby dopracować realizm).
+  async renderCodeToBlob(code, time, w = 640, h = 360, seed = 1) {
+    const gl = this.gl;
+    const entry = this.customProgram(code);
+    if (!entry.prog) return null;
+    const target = makeTarget(gl, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(entry.prog.p);
+    gl.uniform1f(entry.prog.u.uTime, time);
+    gl.uniform1f(entry.prog.u.uSeed, (seed % 97) * 0.61);
+    gl.uniform2f(entry.prog.u.uRes, w, h);
+    this.draw(entry.prog);
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    freeTarget(gl, target);
+    this.onFrame?.();
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    const img = ctx.createImageData(w, h);
+    for (let y = 0; y < h; y++) img.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+    ctx.putImageData(img, 0, 0);
+    return new Promise((res) => c.toBlob(res, 'image/png'));
   }
 
   // Kompiluje wszystkie shadery z góry – pierwsze odtworzenie nie "przycina".
@@ -279,14 +337,15 @@ export class Renderer {
     const gl = this.gl;
     const preset = scene.source.preset;
     const def = PROCEDURAL_SHADERS[preset] || PROCEDURAL_SHADERS.ocean;
-    const target = this.sceneTarget(slot, def.scale * (this.project.renderScale || 1));
-    const prog = this.procProgram(preset);
+    const custom = scene.source.type === 'shader' && scene.source.code ? this.customProgram(scene.source.code).prog : null;
+    const target = this.sceneTarget(slot, (custom ? AI_SCENE_SCALE : def.scale) * (this.project.renderScale || 1));
+    const prog = custom || this.procProgram(preset);
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
     gl.viewport(0, 0, target.w, target.h);
     gl.disable(gl.BLEND);
     gl.useProgram(prog.p);
     const seed = Number(scene.source.seed) || 1;
-    gl.uniform1f(prog.u.uTime, local + (seed % 50) * 3.7);
+    gl.uniform1f(prog.u.uTime, custom ? local : local + (seed % 50) * 3.7);
     gl.uniform1f(prog.u.uSeed, (seed % 97) * 0.61);
     gl.uniform2f(prog.u.uRes, target.w, target.h);
     this.draw(prog);

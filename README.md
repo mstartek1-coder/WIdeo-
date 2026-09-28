@@ -12,6 +12,7 @@ pomysł → reżyser AI (scenopis) → klipy AI + lektor + efekty → montaż (k
 ## Co potrafi
 
 **Obraz**
+- **Agent scen (bez kluczy API)**: opisujesz ujęcie, a Claude pisze animowaną scenę 3D w WebGL (światło, materiały, mgła, ruch kamery). Studio ją kompiluje, a agent sam poprawia błędy i dopracowuje realizm po obejrzeniu wyrenderowanej klatki. Można też wydawać mu uwagi („więcej mgły”, „słońce niżej”). Działa w aplikacji Claude na koncie oglądającego albo lokalnie z `ANTHROPIC_API_KEY`.
 - **Generowanie wideo AI**: Veo 3 (z natywnym dźwiękiem), Kling 2.1 Master, Hailuo 02, Seedance 1 Pro albo dowolny model z Replicate.
 - **Zdjęcia AI** (Flux 1.1 Pro Ultra w trybie RAW, Imagen 4) i **animacja zdjęcia** (image→video).
 - **Kreator promptów „hiperrealizm”**: ruch kamery, obiektyw, światło, kamera/taśma (ARRI, RED, Kodak 500T, IMAX…), styl, fizyka ruchu i negatywny prompt przeciw typowym artefaktom AI.
@@ -49,7 +50,7 @@ Otwórz **http://127.0.0.1:5173**. Na start wczytuje się projekt demo – wciś
 
 | Zmienna w `.env` | Co odblokowuje |
 |---|---|
-| `ANTHROPIC_API_KEY` | Reżyser AI (Claude) – scenopis z promptami i lektorem |
+| `ANTHROPIC_API_KEY` | Reżyser AI i agent scen (Claude) – w aplikacji Claude działają bez klucza |
 | `REPLICATE_API_TOKEN` | Wideo: Veo 3 / Veo 3 Fast / Kling / Hailuo / Seedance; zdjęcia: Flux, Imagen |
 | `GEMINI_API_KEY` | Google Veo bezpośrednio przez Gemini API (wideo z dźwiękiem) |
 | `ELEVENLABS_API_KEY` | Lektor (TTS), efekty dźwiękowe, muzyka |
@@ -69,6 +70,16 @@ Klucze zostają na serwerze – przeglądarka nigdy ich nie widzi. Generowane pl
 6. **Zdjęcie → wideo**: wygeneruj zdjęcie Fluxem (RAW), a potem „Animuj to zdjęcie” – często najbardziej fotorealistyczna ścieżka.
 7. W montażu ujednolić kolor presetem i dodać lekkie ziarno oraz winietę – różne klipy zaczną wyglądać jak jeden film.
 
+## Bez żadnych kluczy
+
+W aplikacji Claude (albo lokalnie z samym `ANTHROPIC_API_KEY`) pełna ścieżka wygląda tak:
+1. **Reżyser** – wpisz pomysł i kliknij „✦ Reżyseruj z AI”.
+2. **⚡ Generuj wszystko AI** – agent scen tworzy po kolei animację dla każdej sceny (1–3 min na scenę).
+3. Popraw sceny uwagami reżysera, ustaw kolor, napisy i muzykę z syntezatora.
+4. **Eksportuj film**.
+
+Sceny agenta to grafika komputerowa renderowana na żywo, a nie nagranie z kamery. Po fotorealistyczne klipy sięgnij po klucze do modeli wideo.
+
 ## Skróty klawiszowe
 
 `Spacja` odtwarzanie · `←/→` klatka (z `Shift` – sekunda) · `Home/End` początek/koniec · `Ctrl+Z` / `Ctrl+Shift+Z` cofnij/ponów · `Delete` usuń zaznaczone · `Ctrl+kółko` na osi czasu – zoom.
@@ -80,7 +91,7 @@ server/                     Node.js bez frameworków
   index.js                  statyczne studio, API, media z obsługą Range (przewijanie wideo), upload
   jobs.js                   kolejka zadań generowania, zapis wyników do media/
   providers/
-    director.js             Claude – scenopis (structured outputs, JSON Schema)
+    director.js             Claude – scenopis (structured outputs) i zapytania agenta scen
     replicate.js            Veo 3, Kling, Hailuo, Seedance, Flux, Imagen (+ dowolny model)
     veo.js                  Google Veo przez Gemini API
     elevenlabs.js           lektor, efekty dźwiękowe, muzyka
@@ -91,6 +102,8 @@ public/
     keyframes.js, easing.js interpolacja i krzywe ruchu (w tym cubic-bezier)
     prompt.js               kreator promptów hiperrealistycznych
     storyboard.js           reżyser offline + import planu reżysera AI
+    director-prompt.js      wspólne instrukcje i schemat scenopisu
+    scene-agent.js          agent scen: polecenia dla Claude, parsowanie kodu, mapowanie błędów
     synth.js                DSP: filtry, Freeverb, ambienty, generator muzyki, zapis WAV
   js/engine/
     shaders.js              sceny proceduralne GLSL, kompozycja, bloom, postprodukcja

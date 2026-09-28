@@ -25,10 +25,10 @@ const SAMPLE_ERRORS = {
   sampling_disabled: 'Claude nie jest dostępny dla tego konta.',
   rate_limited: 'Za dużo zapytań do Claude – spróbuj ponownie za chwilę.',
   session_expired: 'Sesja wygasła – zaloguj się ponownie w aplikacji Claude.',
-  refused: 'Claude odmówił przygotowania scenopisu – zmień opis pomysłu.',
-  invalid_json: 'Odpowiedź nie była poprawnym scenopisem – spróbuj ponownie.',
+  refused: 'Claude odmówił wykonania tego zadania – zmień opis.',
+  invalid_json: 'Odpowiedź Claude miała zły format – spróbuj ponownie.',
   empty_completion: 'Claude nie zwrócił odpowiedzi – spróbuj krótszego opisu.',
-  prompt_too_large: 'Opis pomysłu jest za długi – skróć go.',
+  prompt_too_large: 'Zapytanie jest za długie – skróć opis.',
 };
 
 export function sampleErrorMessage(err) {

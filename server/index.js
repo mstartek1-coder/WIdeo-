@@ -9,7 +9,7 @@ import { createJob, getJob, listJobs, saveMedia, extensionFor } from './jobs.js'
 import * as replicate from './providers/replicate.js';
 import * as veo from './providers/veo.js';
 import * as eleven from './providers/elevenlabs.js';
-import { directStoryboard } from './providers/director.js';
+import { directStoryboard, askClaude } from './providers/director.js';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -59,7 +59,7 @@ async function readBody(req, limit) {
 }
 
 async function readJson(req) {
-  const buf = await readBody(req, 2 * 1024 * 1024);
+  const buf = await readBody(req, 8 * 1024 * 1024);
   if (!buf.length) return {};
   try {
     return JSON.parse(buf.toString('utf8'));
@@ -151,6 +151,13 @@ const routes = {
   'POST /api/director': async (req) => {
     const body = await readJson(req);
     const job = createJob('director', { idea: String(body.idea || '').slice(0, 200) }, (update) => directStoryboard(body, update));
+    return jobResponse(job);
+  },
+
+  'POST /api/claude': async (req) => {
+    const body = await readJson(req);
+    if (!body.prompt) throw new HttpError(400, 'Brak zapytania');
+    const job = createJob('claude', {}, (update) => askClaude({ prompt: String(body.prompt), imageBase64: body.imageBase64 }, update));
     return jobResponse(job);
   },
 

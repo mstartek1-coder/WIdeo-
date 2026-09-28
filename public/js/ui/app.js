@@ -13,6 +13,8 @@ import { offlineStoryboard, projectFromDirector } from '../core/storyboard.js';
 import { getStatus, runJob, upload, probeDuration } from '../api.js';
 import { platform, platformReady, sampleErrorMessage } from '../platform.js';
 import { directorPromptWithSchema, sanitizePlan } from '../core/director-prompt.js';
+import { askClaude, claudeAvailable, canSendImages } from '../ai.js';
+import { createScenePrompt, fixPrompt, refinePrompt, editPrompt, parseSceneReply } from '../core/scene-agent.js';
 
 const STORAGE_KEY = 'wideo-studio-project-v1';
 const $ = (id) => document.getElementById(id);
@@ -27,6 +29,7 @@ const state = {
   idea: '',
   sceneCount: 5,
   style: 'cinematic',
+  agentRefine: true,
 };
 
 let project = null;
@@ -41,6 +44,7 @@ let saveTimer = null;
 let cancelExport = false;
 const history = { past: [], future: [] };
 const sceneJobs = new Map();
+const agentRuns = new Map();
 const jobLog = [];
 
 // ------------------------------------------------------------------ Stan i historia
@@ -270,7 +274,7 @@ function renderDirector() {
       h('button', { title: 'Scenopis bez API – działa od razu', onclick: () => runDirector(false) }, 'Offline'),
     ),
     h('div', { class: 'row fill' },
-      h('button', { disabled: !(P.replicate?.available || P.veo?.available || P.elevenlabs?.available), title: 'Wygeneruj wideo AI dla scen bez materiału i nagraj lektora', onclick: generateAll }, '⚡ Generuj wszystko AI'),
+      h('button', { disabled: !(P.replicate?.available || P.veo?.available || P.elevenlabs?.available || claudeAvailable(P)), title: 'Stwórz sceny AI (lub klipy wideo, jeśli masz klucze) dla scen bez materiału i nagraj lektora', onclick: generateAll }, '⚡ Generuj wszystko AI'),
     ),
   );
 }
@@ -281,7 +285,7 @@ function renderScenes() {
     L.map((e) => {
       const s = e.scene;
       const job = sceneJobs.get(s.id);
-      const kind = s.source.type === 'media' ? s.source.kind : 'proc';
+      const kind = s.source.type === 'media' ? s.source.kind : s.source.type === 'shader' ? 'ai' : 'proc';
       const selected = state.selection.type === 'scene' && state.selection.id === s.id;
       return h('li', {
         class: `scene-item ${selected ? 'selected' : ''}`,
@@ -295,7 +299,7 @@ function renderScenes() {
         h('div', { class: 'scene-name' }, s.name),
         h('div', { class: 'scene-meta' },
           h('span', {}, `${s.duration.toFixed(1)} s`),
-          h('span', { class: `badge ${kind === 'proc' ? 'proc' : kind}` }, kind === 'proc' ? PROCEDURAL_PRESETS[s.source.preset]?.label.split(' ')[0] || 'proc' : kind === 'video' ? 'wideo' : 'zdjęcie'),
+          h('span', { class: `badge ${kind}` }, kind === 'proc' ? PROCEDURAL_PRESETS[s.source.preset]?.label.split(' ')[0] || 'proc' : kind === 'ai' ? '✦ scena AI' : kind === 'video' ? 'wideo' : 'zdjęcie'),
           s.audio.voice.url ? h('span', { class: 'badge' }, '🎙') : null,
           s.audio.sfx.url ? h('span', { class: 'badge' }, 'SFX') : null,
           job && !job.error ? h('span', { class: 'badge job' }, '⏳ AI') : null,
@@ -353,6 +357,8 @@ function renderInspectorPanel() {
     providers,
     offline,
     embedded: platform.embedded,
+    claude: claudeAvailable(providers),
+    agentRunning: (id) => agentRuns.has(id),
     jobs: sceneJobs,
     change,
     live,
@@ -644,23 +650,138 @@ const actions = {
   },
 };
 
+// ------------------------------------------------------------------ Agent scen (Claude pisze scenę WebGL)
+
+async function runSceneAgent(id, { instruction = '' } = {}) {
+  const first = sceneById(id);
+  if (!first || agentRuns.has(id) || !renderer) return;
+  const ctl = new AbortController();
+  agentRuns.set(id, ctl);
+  const entry = { label: `Scena AI: ${first.name}`, status: 'running', message: 'Start…' };
+  jobLog.unshift(entry);
+  let stepMsg = '';
+  const step = (msg) => {
+    stepMsg = msg;
+    entry.message = msg;
+    renderJobs();
+    setSceneJob(id, msg);
+  };
+  const ask = async (prompt, image) => {
+    let shown = 0;
+    const text = await askClaude(prompt, {
+      image,
+      signal: ctl.signal,
+      onText: ({ text: t }) => {
+        if (t.length - shown < 600) return;
+        shown = t.length;
+        setSceneJob(id, `${stepMsg} (${(t.length / 1000).toFixed(1)} tys. znaków)`);
+      },
+    });
+    return parseSceneReply(text);
+  };
+  // Kompiluje kod; przy błędach Claude poprawia go (maks. 2 razy). soft=true: zwraca null zamiast błędu.
+  const compiled = async (res, soft = false) => {
+    for (let attempt = 0; ; attempt++) {
+      if (!res) {
+        if (soft) return null;
+        throw new Error('Claude nie zwrócił kodu sceny – spróbuj ponownie.');
+      }
+      const check = renderer.checkShader(res.code);
+      if (check.ok) return res;
+      if (attempt >= 2) {
+        if (soft) return null;
+        throw new Error('Claude nie zdołał napisać działającej sceny – spróbuj ponownie albo uprość opis.');
+      }
+      step(`Poprawiam błędy w kodzie sceny (${attempt + 1}/2)…`);
+      const fixed = await ask(fixPrompt(sceneById(id) || first, res.code, check.log));
+      res = fixed ? { ...fixed, title: res.title, ambience: res.ambience || fixed.ambience } : null;
+    }
+  };
+  try {
+    let scene = first;
+    const editing = instruction.trim() && scene.source.type === 'shader';
+    step(editing ? 'Claude wprowadza poprawki…' : 'Claude projektuje scenę…');
+    let res = await compiled(await ask(editing ? editPrompt(scene, scene.source.code, instruction) : createScenePrompt(scene)));
+    applyShader(id, res);
+    if (state.agentRefine && (await canSendImages())) {
+      scene = sceneById(id);
+      if (!scene) return;
+      step('Claude ogląda klatkę i dopracowuje realizm…');
+      const t = Math.min(2, scene.duration / 2);
+      const image = await renderer.renderCodeToBlob(res.code, t, 640, 360, scene.source.seed);
+      if (image) {
+        const better = await compiled(await ask(refinePrompt(scene, res.code, t), image), true);
+        if (better) {
+          res = { ...better, title: res.title, ambience: res.ambience || better.ambience };
+          applyShader(id, res);
+        }
+      }
+    }
+    entry.status = 'done';
+    setSceneJob(id, null);
+    toast(`Scena AI gotowa: ${res.title}`, 'ok');
+  } catch (err) {
+    const cancelled = err?.code === 'cancelled' || ctl.signal.aborted;
+    const msg = cancelled ? 'Przerwano' : err?.code ? sampleErrorMessage(err) : err?.message || 'Nieznany błąd';
+    entry.status = 'error';
+    entry.message = msg;
+    if (cancelled) setSceneJob(id, null);
+    else {
+      setSceneJob(id, msg, true);
+      toast(`Scena AI: ${msg}`, 'err', 8000);
+    }
+  } finally {
+    agentRuns.delete(id);
+    renderJobs();
+    if (state.selection.type === 'scene' && state.selection.id === id) renderInspectorPanel();
+  }
+}
+
+function applyShader(id, res) {
+  if (!sceneById(id)) return;
+  change((p) => {
+    const s = p.scenes.find((x) => x.id === id);
+    s.source = { type: 'shader', code: res.code, title: res.title, preset: s.source.preset || 'ocean', seed: s.source.seed || 1 };
+    if (res.ambience) s.audio.ambience = res.ambience;
+  }, { refresh: true });
+}
+
+actions.runSceneAgent = (id, opts) => runSceneAgent(id, opts);
+actions.stopSceneAgent = (id) => agentRuns.get(id)?.abort();
+actions.applyShaderCode = (id, code) => {
+  const check = renderer.checkShader(code);
+  if (!check.ok) {
+    setSceneJob(id, `Błąd w kodzie: ${check.log.split('\n')[0]}`, true);
+    return toast('Kod ma błędy – szczegóły pod przyciskiem.', 'err');
+  }
+  sceneJobs.delete(id);
+  change((p) => (p.scenes.find((x) => x.id === id).source.code = code), { refresh: true });
+  toast('Zastosowano kod sceny', 'ok');
+};
+
 async function generateAll() {
   const canVideo = project.ai.videoProvider === 'veo' ? providers.veo?.available : providers.replicate?.available;
   const canVoice = providers.elevenlabs?.available;
+  const canAgent = !canVideo && claudeAvailable(providers);
   const tasks = [];
+  const agentTasks = [];
   for (const s of project.scenes) {
     if (canVideo && s.source.type !== 'media' && !sceneJobs.has(s.id)) tasks.push(() => actions.generateVideo(s.id));
+    if (canAgent && s.source.type === 'procedural' && !agentRuns.has(s.id)) agentTasks.push(() => runSceneAgent(s.id));
   }
   for (const s of project.scenes) {
     if (canVoice && s.audio.voice.text.trim() && !s.audio.voice.url) tasks.push(() => actions.generateVoice(s.id));
   }
-  if (!tasks.length) return toast('Nie ma nic do wygenerowania (wszystkie sceny mają materiał i nagranego lektora).');
-  toast(`Startuję ${tasks.length} zadań AI – możesz dalej pracować.`, 'ok');
+  if (!tasks.length && !agentTasks.length) return toast('Nie ma nic do wygenerowania – wszystkie sceny mają już materiał.');
+  toast(`Startuję ${tasks.length + agentTasks.length} zadań AI${agentTasks.length ? ' – Claude tworzy sceny po kolei, każda zajmuje 1–3 minuty' : ''}. Możesz dalej pracować.`, 'ok', 7000);
   let next = 0;
   const worker = async () => {
     while (next < tasks.length) await tasks[next++]();
   };
-  await Promise.all([worker(), worker(), worker()]);
+  const agentWorker = async () => {
+    for (const task of agentTasks) await task();
+  };
+  await Promise.all([worker(), worker(), worker(), agentWorker()]);
   toast('Zadania AI zakończone.', 'ok');
 }
 

@@ -76,10 +76,34 @@ function sceneInspector(scene, ctx) {
       ))
     : null;
 
+  const running = ctx.agentRunning(id);
+  const note = h('textarea', { id: `agent-note-${id}`, rows: 2, placeholder: 'np. więcej mgły, słońce niżej, dodaj deszcz, kamera wolniej' });
+  const codeBox = h('textarea', { id: `agent-code-${id}`, class: 'code-edit', spellcheck: 'false' });
+  if (scene.source.type === 'shader') codeBox.value = scene.source.code || '';
+  const aiScene = scene.source.type === 'shader'
+    ? h('div', { class: 'agent-box' },
+      h('div', { class: 'media-card' },
+        h('div', { class: 'ai-thumb' }, '✦'),
+        h('div', {},
+          h('div', {}, `Scena AI: ${scene.source.title || 'bez tytułu'}`),
+          h('div', { class: 'name' }, `Animacja WebGL napisana przez Claude · ${(scene.source.code || '').length} znaków kodu`),
+        )),
+      h('label', { class: 'field stack', for: note.id }, h('span', {}, 'Uwagi reżysera – co zmienić?'), note),
+      h('div', { class: 'row' },
+        h('button', { class: 'primary', disabled: !ctx.claude || running, onclick: () => note.value.trim() ? ctx.actions.runSceneAgent(id, { instruction: note.value }) : ctx.toast('Wpisz, co zmienić w scenie.') }, '✦ Popraw scenę'),
+        h('button', { class: 'small danger', onclick: () => ctx.actions.removeMedia(id) }, 'Usuń (wróć do tła)'),
+      ),
+      h('details', {}, h('summary', { class: 'muted' }, 'Kod sceny (GLSL) – dla zaawansowanych'),
+        codeBox,
+        h('div', { class: 'row' }, h('button', { class: 'small', onclick: () => ctx.actions.applyShaderCode(id, codeBox.value) }, 'Zastosuj kod'))),
+    )
+    : null;
+
   const visual = group(
     'Obraz',
     media,
-    scene.source.type !== 'media'
+    aiScene,
+    scene.source.type === 'procedural'
       ? [
         select('Tło proceduralne', scene.source.preset, PROCEDURAL_PRESETS, (v) => edit((s) => {
           s.source.preset = v;
@@ -97,7 +121,7 @@ function sceneInspector(scene, ctx) {
 
   // --- Prompt AI
   const promptGroup = group(
-    'Generowanie AI (hiperrealizm)',
+    'Generowanie AI',
     textArea('Co widać w ujęciu (najlepiej po angielsku)', scene.prompt.subject, (v) => edit((s) => (s.prompt.subject = v), { refresh: true }), { rows: 3, placeholder: 'np. An elderly fisherman mending nets on a wooden pier, weathered hands, morning mist over the harbour' }),
     select('Ruch kamery', scene.prompt.camera, CAMERA_MOVES, (v) => edit((s) => (s.prompt.camera = v), { refresh: true })),
     select('Obiektyw', scene.prompt.lens, LENSES, (v) => edit((s) => (s.prompt.lens = v), { refresh: true })),
@@ -105,6 +129,16 @@ function sceneInspector(scene, ctx) {
     select('Kamera / taśma', scene.prompt.film, FILM_LOOKS, (v) => edit((s) => (s.prompt.film = v), { refresh: true })),
     select('Styl', scene.prompt.style, STYLES, (v) => edit((s) => (s.prompt.style = v), { refresh: true })),
     supportsAudio ? textArea('Dźwięk w klipie (Veo 3 generuje go natywnie)', scene.prompt.audio, (v) => edit((s) => (s.prompt.audio = v), { refresh: true }), { rows: 2, placeholder: 'np. seagulls, creaking wood, soft waves; he mutters "almost done"' }) : null,
+    h('div', { class: 'agent-box' },
+      h('div', { class: 'row fill' },
+        h('button', { class: aiVideoOk ? '' : 'primary', disabled: !ctx.claude || running, title: ctx.claude ? 'Claude napisze animowaną scenę WebGL na podstawie opisu powyżej' : 'Claude jest niedostępny w tym widoku', onclick: () => ctx.actions.runSceneAgent(id) }, scene.source.type === 'shader' ? '✦ Stwórz scenę AI od nowa' : '✦ Stwórz scenę AI (Claude)'),
+        running ? h('button', { class: 'small', onclick: () => ctx.actions.stopSceneAgent(id) }, 'Zatrzymaj') : null,
+      ),
+      h('label', { class: 'toggle' }, h('input', { type: 'checkbox', id: 'agent-refine', checked: ctx.state.agentRefine, onchange: (e) => (ctx.state.agentRefine = e.target.checked) }), 'Dopracuj realizm (Claude ogląda wyrenderowaną klatkę)'),
+      h('p', { class: 'hint' }, ctx.claude
+        ? 'Bez kluczy API: Claude pisze scenę 3D (światło, materiały, ruch kamery) jako animację WebGL i sam poprawia błędy. Trwa zwykle 1–3 minuty.'
+        : 'Agent scen wymaga Claude: otwórz studio w aplikacji Claude albo dodaj ANTHROPIC_API_KEY lokalnie.'),
+    ),
     h('details', {}, h('summary', { class: 'muted' }, 'Pełny prompt'), h('div', { class: 'prompt-preview' }, fullPrompt), h('div', { class: 'row' }, h('button', { class: 'small', onclick: () => {
       const done = () => ctx.toast('Skopiowano prompt', 'ok');
       const fallback = () => {
@@ -121,7 +155,7 @@ function sceneInspector(scene, ctx) {
       }
     } }, 'Kopiuj'))),
     h('div', { class: 'row fill' },
-      h('button', { class: 'primary', disabled: !aiVideoOk || !!jobMsg, title: aiVideoOk ? `${ai.videoProvider === 'veo' ? 'Veo' : ai.videoModel}` : 'Dodaj klucz API w .env', onclick: () => ctx.actions.generateVideo(id, { animate: false }) }, isImage ? '▶ Wideo z promptu' : '▶ Generuj wideo AI'),
+      h('button', { class: aiVideoOk ? 'primary' : '', disabled: !aiVideoOk || !!jobMsg, title: aiVideoOk ? `${ai.videoProvider === 'veo' ? 'Veo' : ai.videoModel}` : 'Dodaj klucz API w .env', onclick: () => ctx.actions.generateVideo(id, { animate: false }) }, isImage ? '▶ Wideo z promptu' : '▶ Generuj wideo AI'),
       h('button', { disabled: !P.replicate?.available || !!jobMsg, title: 'Fotorealistyczne zdjęcie, które animujesz ruchem kamery lub modelem image→video', onclick: () => ctx.actions.generateImage(id) }, '▣ Zdjęcie AI'),
     ),
     isImage ? h('div', { class: 'row fill' }, h('button', { disabled: !aiVideoOk || !!jobMsg, onclick: () => ctx.actions.generateVideo(id, { animate: true }) }, '✦ Animuj to zdjęcie (image→video)')) : null,
