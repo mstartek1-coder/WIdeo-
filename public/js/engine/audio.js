@@ -105,10 +105,13 @@ export class AudioEngine {
           if (e.data.error) cb.reject(new Error(e.data.error));
           else cb.resolve(e.data);
         };
-        this.worker.onerror = () => {
-          for (const cb of this.workerJobs.values()) cb.reject(new Error('Worker syntezy przestał działać'));
+        this.worker.onerror = (e) => {
+          e?.preventDefault?.();
+          // Worker niedostępny (np. zablokowany) – dokończ zadania w głównym wątku.
+          const pending = [...this.workerJobs.values()];
           this.workerJobs.clear();
           this.worker = false;
+          for (const cb of pending) cb.resolve(synthOnMainThread(cb.job));
         };
       } catch {
         this.worker = false;
@@ -117,15 +120,11 @@ export class AudioEngine {
     if (this.worker) {
       const id = ++this.workerSeq;
       return new Promise((resolve, reject) => {
-        this.workerJobs.set(id, { resolve, reject });
+        this.workerJobs.set(id, { resolve, reject, job });
         this.worker.postMessage({ id, ...job });
       });
     }
-    // Awaryjnie: synteza w głównym wątku.
-    const out = job.kind === 'music'
-      ? generateMusic(job.type, job.duration, { seed: job.seed, sampleRate: job.sampleRate })
-      : generateAmbience(job.type, job.duration, { seed: job.seed, sampleRate: job.sampleRate });
-    return Promise.resolve(out);
+    return Promise.resolve(synthOnMainThread(job));
   }
 
   // ---------------- Harmonogram ----------------
@@ -271,6 +270,12 @@ export class AudioEngine {
     this.schedule(off, comp, 0, 0);
     return off.startRendering();
   }
+}
+
+function synthOnMainThread(job) {
+  return job.kind === 'music'
+    ? generateMusic(job.type, job.duration, { seed: job.seed, sampleRate: job.sampleRate })
+    : generateAmbience(job.type, job.duration, { seed: job.seed, sampleRate: job.sampleRate });
 }
 
 // Planuje obwiednię zadaną punktami [czas osi, wartość] względem startu odtwarzania.

@@ -5,12 +5,14 @@ import { TimelineView } from './timeline-view.js';
 import { renderInspector } from './inspector.js';
 import { Renderer } from '../engine/renderer.js';
 import { AudioEngine } from '../engine/audio.js';
-import { exportVideo, exportWav, exportProjectJson, downloadBlob, safeName } from '../engine/exporter.js';
+import { exportVideo, exportWav, exportProjectJson, saveFile, canSaveWav, safeName } from '../engine/exporter.js';
 import { createProject, createScene, createOverlay, createDemoProject, normalizeProject, aspectLabel, PROCEDURAL_PRESETS } from '../core/project.js';
 import { layoutScenes, totalDuration, formatTime } from '../core/timeline.js';
 import { buildVideoPrompt, buildImagePrompt, buildSfxPrompt, NEGATIVE_PROMPT, STYLES } from '../core/prompt.js';
 import { offlineStoryboard, projectFromDirector } from '../core/storyboard.js';
 import { getStatus, runJob, upload, probeDuration } from '../api.js';
+import { platform, platformReady, sampleErrorMessage } from '../platform.js';
+import { directorPromptWithSchema, sanitizePlan } from '../core/director-prompt.js';
 
 const STORAGE_KEY = 'wideo-studio-project-v1';
 const $ = (id) => document.getElementById(id);
@@ -135,10 +137,21 @@ function scheduleSave() {
 function loadSaved() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? normalizeProject(JSON.parse(raw)) : null;
+    return raw ? dropSessionFiles(normalizeProject(JSON.parse(raw))) : null;
   } catch {
     return null;
   }
+}
+
+// Pliki wgrane bez serwera żyją tylko do odświeżenia strony – po ponownym wczytaniu wracamy do tła proceduralnego.
+function dropSessionFiles(p) {
+  const isBlob = (u) => typeof u === 'string' && u.startsWith('blob:');
+  for (const s of p.scenes) {
+    if (s.source.type === 'media' && isBlob(s.source.url)) s.source = { type: 'procedural', preset: s.source.preset || 'ocean', seed: s.source.seed || 1 };
+    for (const slot of ['voice', 'sfx']) if (isBlob(s.audio[slot].url)) s.audio[slot].url = '';
+  }
+  if (isBlob(p.audio.music.url)) p.audio.music.url = '';
+  return p;
 }
 
 function select_(sel) {
@@ -220,10 +233,11 @@ function frame() {
   }
 }
 
-function busy(msg) {
+function busy(msg, onStop) {
   const el = $('busy');
   el.hidden = !msg;
-  el.textContent = msg || '';
+  el.replaceChildren(msg || '');
+  if (msg && onStop) el.append(h('button', { class: 'small', onclick: onStop }, 'Zatrzymaj'));
 }
 
 // ------------------------------------------------------------------ Panele
@@ -338,6 +352,7 @@ function renderInspectorPanel() {
     state,
     providers,
     offline,
+    embedded: platform.embedded,
     jobs: sceneJobs,
     change,
     live,
@@ -460,6 +475,19 @@ async function fitSceneToAudio(id, url, extra = 0.8) {
   return d;
 }
 
+let warnedSessionFiles = false;
+
+// Bez serwera plik zostaje w pamięci przeglądarki (działa do odświeżenia strony).
+async function uploadFile(file) {
+  if (!offline) return upload(file);
+  if (!warnedSessionFiles) {
+    warnedSessionFiles = true;
+    toast('Plik działa w tej sesji – po odświeżeniu strony trzeba go wgrać ponownie.', 'info', 7000);
+  }
+  const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('audio/') ? 'audio' : 'video';
+  return { url: URL.createObjectURL(file), file: file.name, kind };
+}
+
 const actions = {
   deleteOverlay,
 
@@ -555,7 +583,7 @@ const actions = {
     if (!file) return;
     busy(`Wgrywam ${file.name}…`);
     try {
-      const res = await upload(file);
+      const res = await uploadFile(file);
       const dur = res.kind === 'video' ? await probeDuration(res.url, 'video') : null;
       applyToScene(id, (s) => {
         s.source = { type: 'media', kind: res.kind === 'image' ? 'image' : 'video', url: res.url, name: file.name, preset: s.source.preset, seed: s.source.seed };
@@ -573,7 +601,7 @@ const actions = {
     if (!file) return;
     busy(`Wgrywam ${file.name}…`);
     try {
-      const res = await upload(file);
+      const res = await uploadFile(file);
       const d = await probeDuration(res.url, 'audio');
       applyToScene(id, (s) => {
         s.audio[slot].url = res.url;
@@ -592,7 +620,7 @@ const actions = {
     if (!file) return;
     busy(`Wgrywam ${file.name}…`);
     try {
-      const res = await upload(file);
+      const res = await uploadFile(file);
       change((p) => (p.audio.music.url = res.url), { refresh: true });
     } catch (err) {
       toast(`Upload: ${err.message}`, 'err');
@@ -642,17 +670,37 @@ async function runDirector(useAi) {
   const keep = { width: project.width, height: project.height, fps: project.fps, look: project.look, ai: project.ai, subtitles: project.subtitles, renderScale: project.renderScale };
   let next;
   if (useAi) {
-    busy('Reżyser AI pisze scenopis…');
-    try {
-      const res = await tracked('Scenopis (Claude)', null, '/api/director', { idea, sceneCount: state.sceneCount, style: state.style, aspect: aspectLabel(project.width, project.height), language: project.ai.language });
-      next = projectFromDirector(res.plan);
-      if (res.plan.musicPrompt) next.audio.music.prompt = res.plan.musicPrompt;
-      toast(`Scenopis gotowy: „${res.plan.title}” – ${res.plan.logline}`, 'ok', 8000);
-    } catch {
-      return;
-    } finally {
-      busy('');
+    const request = { idea, sceneCount: state.sceneCount, style: state.style, aspect: aspectLabel(project.width, project.height), language: project.ai.language };
+    let plan;
+    if (providers.director?.viaApp) {
+      const ctl = new AbortController();
+      busy('Reżyser AI pisze scenopis… (zwykle do minuty)', () => ctl.abort());
+      try {
+        plan = sanitizePlan(await platform.sample.json(directorPromptWithSchema(request), { signal: ctl.signal, cache: false }));
+        if (!plan.scenes.length) throw { code: 'invalid_json' };
+      } catch (err) {
+        if (err?.code !== 'cancelled') toast(sampleErrorMessage(err), 'err', 8000);
+        if (['not_granted', 'sampling_disabled', 'capability_disabled', 'capability_removed', 'not_declared'].includes(err?.code)) {
+          providers.director = { available: false };
+          renderDirector();
+        }
+        return;
+      } finally {
+        busy('');
+      }
+    } else {
+      busy('Reżyser AI pisze scenopis…');
+      try {
+        plan = (await tracked('Scenopis (Claude)', null, '/api/director', request)).plan;
+      } catch {
+        return;
+      } finally {
+        busy('');
+      }
     }
+    next = projectFromDirector(plan);
+    if (plan.musicPrompt) next.audio.music.prompt = plan.musicPrompt;
+    toast(`Scenopis gotowy: „${plan.title}”${plan.logline ? ` – ${plan.logline}` : ''}`, 'ok', 8000);
   } else {
     next = offlineStoryboard(idea, { sceneCount: state.sceneCount, style: state.style });
   }
@@ -685,8 +733,8 @@ async function doExportVideo() {
       shouldCancel: () => cancelExport,
     });
     audioDirty = false;
-    if (res) {
-      downloadBlob(res.blob, `${safeName(project.name)}.${res.ext}`);
+    dlg.close();
+    if (res && (await saveFile(res.blob, `${safeName(project.name)}.${res.ext}`)) === 'saved') {
       toast(`Film zapisany (${(res.blob.size / 1e6).toFixed(1)} MB, ${res.ext.toUpperCase()})`, 'ok', 6000);
     }
   } catch (err) {
@@ -704,7 +752,8 @@ async function doExportWav() {
   try {
     const blob = await exportWav(audio, project);
     audioDirty = false;
-    downloadBlob(blob, `${safeName(project.name)}.wav`);
+    busy('');
+    await saveFile(blob, `${safeName(project.name)}.wav`);
   } catch (err) {
     toast(`Eksport audio: ${err.message}`, 'err');
   } finally {
@@ -720,7 +769,12 @@ async function doSnapshot() {
   const blob = await renderer.snapshot();
   renderer.resize(state.previewScale);
   needsRender = true;
-  if (blob) downloadBlob(blob, `${safeName(project.name)}_${state.time.toFixed(2).replace('.', '_')}s.png`);
+  if (!blob) return;
+  try {
+    await saveFile(blob, `${safeName(project.name)}_${state.time.toFixed(2).replace('.', '_')}s.png`);
+  } catch (err) {
+    toast(err.message, 'err');
+  }
 }
 
 // ------------------------------------------------------------------ Start
@@ -734,7 +788,7 @@ function bindUi() {
     else if (a === 'redo') redo();
     else if (a === 'new') replaceProject(createProject({ name: 'Nowy film', scenes: [{ name: 'Scena 1' }], ai: project.ai }));
     else if (a === 'demo') replaceProject(createDemoProject());
-    else if (a === 'save') downloadBlob(exportProjectJson(project), `${safeName(project.name)}.wideo.json`);
+    else if (a === 'save') saveFile(exportProjectJson(project), `${safeName(project.name)}.wideo.json`).catch((err) => toast(err.message, 'err'));
     else if (a === 'snapshot') doSnapshot();
     else if (a === 'export-wav') doExportWav();
     else if (a === 'export-video') doExportVideo();
@@ -845,6 +899,10 @@ async function init() {
   const status = await getStatus();
   providers = status.providers || {};
   offline = !!status.offline;
+  renderAll();
+  await platformReady;
+  if (!providers.director?.available && platform.sample) providers.director = { available: true, viaApp: true, model: 'Claude' };
+  document.querySelector('[data-action=export-wav]').hidden = !(await canSaveWav());
   renderAll();
   // Kompilacja pozostałych shaderów w tle, żeby przełączanie scen było płynne.
   setTimeout(() => {

@@ -1,6 +1,7 @@
 // Eksport: film (MP4/WebM z dźwiękiem, nagrywany w czasie rzeczywistym), miks audio WAV, klatka PNG, projekt JSON.
 
 import { encodeWav } from '../core/synth.js';
+import { platform, platformReady } from '../platform.js';
 
 const MIME_CANDIDATES = [
   'video/mp4;codecs=avc1.640033,mp4a.40.2',
@@ -27,11 +28,37 @@ export function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
+// Zapis pliku: w aplikacji Claude przez okno potwierdzenia, w zwykłej przeglądarce jako pobranie.
+// Zwraca 'saved' albo 'declined'; rzuca błąd z opisem, gdy zapis jest niemożliwy.
+export async function saveFile(blob, filename) {
+  await platformReady;
+  if (platform.downloads) {
+    try {
+      await platform.downloads.save({ filename, data: blob });
+      return 'saved';
+    } catch (err) {
+      if (err?.code === 'declined') return 'declined';
+      if (err?.code === 'rate_limited') throw new Error('Okno zapisu jest już otwarte – dokończ poprzedni zapis.');
+      if (err?.code === 'rejected_extension') throw new Error('Ten format pliku nie może być zapisany w aplikacji Claude.');
+      throw new Error('Zapisywanie plików jest niedostępne w tym widoku.');
+    }
+  }
+  if (platform.embedded) throw new Error('Zapisywanie plików jest niedostępne w tym widoku.');
+  downloadBlob(blob, filename);
+  return 'saved';
+}
+
+// W aplikacji Claude można zapisać tylko wybrane formaty (bez WAV).
+export async function canSaveWav() {
+  await platformReady;
+  return !platform.embedded;
+}
+
 export function safeName(name) {
   return (
     String(name || 'film')
       .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
+      .replace(/[\u0300-\u036f]/g, '')
       .replace(/ł/g, 'l')
       .replace(/Ł/g, 'L')
       .replace(/[^a-zA-Z0-9-_]+/g, '_')

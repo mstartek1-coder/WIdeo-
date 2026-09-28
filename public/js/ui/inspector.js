@@ -105,14 +105,32 @@ function sceneInspector(scene, ctx) {
     select('Kamera / taśma', scene.prompt.film, FILM_LOOKS, (v) => edit((s) => (s.prompt.film = v), { refresh: true })),
     select('Styl', scene.prompt.style, STYLES, (v) => edit((s) => (s.prompt.style = v), { refresh: true })),
     supportsAudio ? textArea('Dźwięk w klipie (Veo 3 generuje go natywnie)', scene.prompt.audio, (v) => edit((s) => (s.prompt.audio = v), { refresh: true }), { rows: 2, placeholder: 'np. seagulls, creaking wood, soft waves; he mutters "almost done"' }) : null,
-    h('details', {}, h('summary', { class: 'muted' }, 'Pełny prompt'), h('div', { class: 'prompt-preview' }, fullPrompt), h('div', { class: 'row' }, h('button', { class: 'small', onclick: () => navigator.clipboard?.writeText(fullPrompt).then(() => ctx.toast('Skopiowano prompt', 'ok')) }, 'Kopiuj'))),
+    h('details', {}, h('summary', { class: 'muted' }, 'Pełny prompt'), h('div', { class: 'prompt-preview' }, fullPrompt), h('div', { class: 'row' }, h('button', { class: 'small', onclick: () => {
+      const done = () => ctx.toast('Skopiowano prompt', 'ok');
+      const fallback = () => {
+        const range = document.createRange();
+        range.selectNodeContents(document.querySelector('#inspector .prompt-preview'));
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        ctx.toast('Prompt zaznaczony – skopiuj go skrótem Ctrl+C.');
+      };
+      try {
+        navigator.clipboard.writeText(fullPrompt).then(done, fallback);
+      } catch {
+        fallback();
+      }
+    } }, 'Kopiuj'))),
     h('div', { class: 'row fill' },
       h('button', { class: 'primary', disabled: !aiVideoOk || !!jobMsg, title: aiVideoOk ? `${ai.videoProvider === 'veo' ? 'Veo' : ai.videoModel}` : 'Dodaj klucz API w .env', onclick: () => ctx.actions.generateVideo(id, { animate: false }) }, isImage ? '▶ Wideo z promptu' : '▶ Generuj wideo AI'),
       h('button', { disabled: !P.replicate?.available || !!jobMsg, title: 'Fotorealistyczne zdjęcie, które animujesz ruchem kamery lub modelem image→video', onclick: () => ctx.actions.generateImage(id) }, '▣ Zdjęcie AI'),
     ),
     isImage ? h('div', { class: 'row fill' }, h('button', { disabled: !aiVideoOk || !!jobMsg, onclick: () => ctx.actions.generateVideo(id, { animate: true }) }, '✦ Animuj to zdjęcie (image→video)')) : null,
     h('div', { class: `status-line ${jobMsg?.error ? 'err' : ''}` }, jobMsg ? jobMsg.text : ''),
-    !aiVideoOk ? h('p', { class: 'hint' }, 'Generowanie wideo wymaga klucza REPLICATE_API_TOKEN lub GEMINI_API_KEY w pliku .env (zob. README). Model wybierzesz w zakładce Projekt.') : null,
+    !aiVideoOk
+      ? h('p', { class: 'hint' }, ctx.embedded
+        ? 'W aplikacji Claude generowanie klipów jest wyłączone – skopiuj pełny prompt do Veo/Kling albo uruchom studio lokalnie z kluczami API (README). Wgrany klip od razu trafi do montażu.'
+        : 'Generowanie wideo wymaga klucza REPLICATE_API_TOKEN lub GEMINI_API_KEY w pliku .env (zob. README). Model wybierzesz w zakładce Projekt.')
+      : null,
   );
 
   // --- Ruch kamery
@@ -268,12 +286,16 @@ function projectInspector(ctx) {
   return [
     group(
       'Dostawcy AI',
-      provider('Reżyser – Claude', P.director?.available, P.director?.model),
+      provider('Reżyser – Claude', P.director?.available, P.director?.viaApp ? 'przez aplikację Claude' : P.director?.model),
       provider('Replicate – wideo i zdjęcia', P.replicate?.available),
       provider('Google Veo – wideo z dźwiękiem', P.veo?.available),
       provider('ElevenLabs – lektor, SFX, muzyka', P.elevenlabs?.available),
       provider('Silnik proceduralny + syntezator', true, 'offline'),
-      ctx.offline ? h('p', { class: 'hint' }, 'Brak połączenia z serwerem – uruchom „npm start”.') : null,
+      ctx.offline
+        ? h('p', { class: 'hint' }, ctx.embedded
+          ? 'Wersja w aplikacji Claude: tła, dźwięk, montaż i eksport działają od razu. Klipy AI, lektor i efekty wymagają uruchomienia studia lokalnie z kluczami API (README w repozytorium).'
+          : 'Brak połączenia z serwerem – uruchom „npm start”.')
+        : null,
     ),
     group(
       'Modele AI',

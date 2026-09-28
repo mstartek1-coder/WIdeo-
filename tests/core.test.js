@@ -183,3 +183,20 @@ test('createProject nie współdzieli obiektów między scenami', () => {
   assert.equal(p.scenes[1].grade.exposure, 0);
   assert.notEqual(p.scenes[0].id, p.scenes[1].id);
 });
+
+test('sanitizePlan naprawia odpowiedź modelu', async () => {
+  const { sanitizePlan, directorPromptWithSchema } = await import('../public/js/core/director-prompt.js');
+  const plan = sanitizePlan({ title: '', musicMood: 'disco', scenes: [{ duration: 99, camera: 'jetpack', ambience: 'waves', transition: 'wipe' }, null, 'x'] });
+  assert.equal(plan.title, 'Mój film');
+  assert.equal(plan.musicMood, 'epic');
+  assert.equal(plan.scenes.length, 1);
+  assert.equal(plan.scenes[0].duration, 12);
+  assert.equal(plan.scenes[0].camera, 'slow-dolly-in');
+  assert.equal(plan.scenes[0].ambience, 'waves');
+  assert.equal(plan.scenes[0].transition, 'wipe');
+  assert.deepEqual(sanitizePlan(null).scenes, []);
+  const prompt = directorPromptWithSchema({ idea: 'Las o świcie', sceneCount: 3 });
+  assert.match(prompt, /Las o świcie/);
+  assert.match(prompt, /Number of scenes: 3/);
+  assert.match(prompt, /"visualPrompt"/);
+});

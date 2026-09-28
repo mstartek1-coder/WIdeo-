@@ -76,7 +76,7 @@ input[type=checkbox] { accent-color: var(--accent); }
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 12px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--line);
   background: #0f1014;
   flex-wrap: wrap;
@@ -104,7 +104,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 }
 .left { border-right: 1px solid var(--line); }
 .right { border-left: 1px solid var(--line); }
-.panel { border-bottom: 1px solid var(--line); padding: 10px 12px; }
+.panel { border-bottom: 1px solid var(--line); padding: 10px 16px; }
 .panel.grow { flex: 1; overflow: auto; min-height: 120px; }
 .panel h2, .inspector h3 {
   margin: 0 0 8px;
@@ -126,7 +126,7 @@ input[type=checkbox] { accent-color: var(--accent); }
   display: grid;
   place-items: center;
   position: relative;
-  padding: 14px;
+  padding: 16px;
 }
 #view {
   max-width: 100%;
@@ -145,6 +145,9 @@ input[type=checkbox] { accent-color: var(--accent); }
   text-align: right;
 }
 .busy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   position: absolute;
   inset: auto 0 22px 0;
   margin: auto;
@@ -158,8 +161,9 @@ input[type=checkbox] { accent-color: var(--accent); }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 6px 16px;
   border-top: 1px solid var(--line);
+  flex-wrap: wrap;
   background: var(--panel);
 }
 .transport .play { width: 44px; font-size: 14px; }
@@ -253,7 +257,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 }
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
 .tabs button:disabled { opacity: .35; }
-.inspector { flex: 1; overflow: auto; padding: 4px 12px 40px; }
+.inspector { flex: 1; overflow: auto; padding: 4px 16px 40px; }
 .group { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .group:last-child { border-bottom: 0; }
 .field { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 8px; margin: 7px 0; }
@@ -325,9 +329,8 @@ dialog h3 { margin: 0 0 8px; }
   .layout { display: flex; flex-direction: column; }
   .left, .right { border: 0; border-bottom: 1px solid var(--line); overflow: visible; }
   .center { order: -1; }
-  .viewer { min-height: 56vw; padding: 8px; }
+  .viewer { min-height: 56vw; padding: 16px; }
   .panel.grow { max-height: 50vh; }
   .inspector { overflow: visible; }
-  .topbar { padding: 8px 16px; }
   .actions { margin-left: 0; width: 100%; }
 }
